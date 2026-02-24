@@ -1,70 +1,218 @@
-# Getting Started with Create React App
+# 🧠 Solidity IA Analyzer
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+**Solidity IA Analyzer** é uma aplicação web desenvolvida em **React + Node.js**, que simula um ambiente de **análise estática e simbólica de contratos inteligentes Solidity**, integrada com **Inteligência Artificial (LLM)** para interpretação contextual e relatórios executivos em português.  
 
-## Available Scripts
+Inspirado em ferramentas como **Slither**, **Mythril** e **Foundry (Forge)**, o projeto oferece uma plataforma **educacional e interativa** para entender, visualizar e medir vulnerabilidades de contratos Ethereum.
 
-In the project directory, you can run:
+---
 
-### `npm start`
+## 🚀 Funcionalidades Principais
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+### 🤖 LLM Integrado (OpenAI + Ollama)
+- Suporte híbrido inteligente:
+  - **OpenAI GPT-4o-mini** (modo online, alta precisão)
+  - **Ollama local** (modelos como `mistral`, `llama3`, `phi3` — modo offline)
+- Gera descrições contextuais e impactos de negócio.
+- Produz relatórios automáticos com linguagem executiva.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+---
 
-### `npm test`
+### 🧾 Relatório Executivo (em Português)
+- Novo botão **“Gerar Relatório Executivo”**.
+- Gera automaticamente um `.txt` com:
+  - **Resumo Executivo**
+  - **Análise de Impacto**
+  - **Exemplos Reais**
+  - **Recomendações**
+  - **Conclusão e Priorização**
+- Linguagem clara, voltada para **gestores e investidores**, não apenas desenvolvedores.
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+---
 
-### `npm run build`
+### 🧠 Mapeamento Taxonômico (SWC Registry)
+- Cada vulnerabilidade detectada é vinculada ao identificador **SWC** (Smart Contract Weakness Classification).  
+  Exemplo:
+  - Reentrancy → `SWC-107`
+  - Unchecked Call Return Value → `SWC-104`
+  - Access Control → `SWC-105`
+- Permite correlacionar falhas entre diferentes ferramentas de análise (Slither, Mythril, etc).
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+---
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### 💾 Histórico Avançado
+- Cada execução salva:
+  - Nome do arquivo e timestamp
+  - Vulnerabilidades detectadas
+  - Notas do usuário
+  - Métricas (precisão, recall, latência)
+- Persistência em `localStorage` com exportação `.sarif`.
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+---
 
-### `npm run eject`
+### 🧩 Analisadores Integrados
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+#### **Slither (Simulação Estática)**
+- Detecção heurística de padrões:
+  - `tx.origin`, `delegatecall`, `call.value`, `send`, `transfer`
+  - `selfdestruct`
+  - Falta de `onlyOwner`
+  - Uso de `assembly`
+  - Pragma < 0.8.x (sem checagem de overflow)
+- Classificação de severidade: High, Medium, Low, Informational
+- Geração de relatórios `.json` e `.txt`
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+#### **Mythril (Simulação Simbólica)**
+- Simula análise simbólica de execução:
+  - Integer Overflow
+  - Unchecked Calls
+  - Access Control Bugs
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+#### **Forge (Fuzzing Simulado)**
+- Simula execução de testes automatizados e fuzzing.
+- Relatórios de cobertura e falhas geradas.
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+---
 
-## Learn More
+## 🧰 Tecnologias Utilizadas
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+| Categoria | Tecnologia |
+|------------|-------------|
+| **Frontend** | React.js, TailwindCSS, Chart.js |
+| **Backend** | Node.js, Express, dotenv, chalk, node-fetch |
+| **IA (LLM)** | OpenAI GPT-4o-mini + Ollama Local (Mistral, Llama3, Phi3) |
+| **Armazenamento** | localStorage |
+| **Relatórios** | JSON e TXT (SARIF-like) |
+| **Ferramentas de Build** | Create React App |
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+---
 
-### Code Splitting
+## ⚙️ Modo Híbrido Inteligente
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+| Cenário | Ação |
+|----------|------|
+| `OPENAI_API_KEY` configurada | Usa API OpenAI (alta precisão) |
+| Sem `OPENAI_API_KEY` | Usa Ollama local automaticamente |
+| Sem modelo Ollama instalado | Sugere comando `ollama pull mistral` no log |
 
-### Analyzing the Bundle Size
+💡 **Resultado:** nunca falha por falta de API ou internet.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+---
 
-### Making a Progressive Web App
+## 🎨 Interface e Design
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+- Tema escuro (`#0f0f10`, `#09090a`)
+- Paleta de severidade:
+  - 🔴 **High:** #ef4444  
+  - 🟠 **Medium:** #f59e0b  
+  - 🟢 **Low:** #10b981  
+  - ⚪ **Informational:** #94a3b8
+- Layout fluido e moderno, focado em legibilidade e contraste.
+- Dashboard interativo com gráficos de métricas.
 
-### Advanced Configuration
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+## 💾 Instalação e Execução
 
-### Deployment
+### 🔧 Pré-requisitos
+- Node.js ≥ 18.x  
+- npm ou yarn  
+- (Opcional) [Ollama](https://ollama.com/download) instalado para modo offline
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+---
 
-### `npm run build` fails to minify
+### 📦 Passos
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+```bash
+git clone https://github.com/jfjoaofilho/solidity-ia-analyzer.git
+cd solidity-ia-analyzer
+npm install
+```
+
+▶️ Backend (servidor LLM)
+
+```bash
+cd backend
+npm install
+npm run start
+```
+
+🌐 Frontend
+
+```bash
+npm start
+```
+
+Acesse http://localhost:3000 no navegador.
+
+---
+
+### 📊 Geração de Relatórios
+
+Após rodar uma análise (ex: via módulo Slither):
+
+1. Clique em “Run Analysis”
+
+2. Visualize as vulnerabilidades detectadas
+
+3. Clique em “Gerar Relatório Executivo”
+
+Será baixado um .txt completo em português
+
+Formato gerado:
+
+```bash
+📄 RELATÓRIO EXECUTIVO — Contrato MyToken.sol
+
+1️⃣ RESUMO EXECUTIVO
+Foram identificadas 5 vulnerabilidades de severidade variada...
+
+2️⃣ IMPACTO DE NEGÓCIO
+Falhas de reentrância e acesso indevido podem permitir retirada indevida de fundos...
+
+3️⃣ RECOMENDAÇÕES
+Implementar ReentrancyGuard, revisar modifiers e atualizar versão do compilador.
+```
+
+### 🧠 Ideia Central
+
+A proposta é criar uma suíte de auditoria inteligente e educacional que:
+
+- Detecta vulnerabilidades típicas.
+
+- Gera insights executivos com IA.
+
+- Mede desempenho técnico e de tempo.
+
+- Simula a integração entre ferramentas de segurança blockchain.
+
+### 🧮 Métricas de Risco (matriz clássica)
+
+| Nível            | Descrição                                            | Exemplo                       |
+| ---------------- | ---------------------------------------------------- | ----------------------------- |
+| 🔴 Alta          | Perda total de fundos, controle indevido do contrato | Reentrancy, Access Control    |
+| 🟠 Média         | Falhas parciais, perda de lógica                     | Manipulação de oráculo        |
+| 🟡 Baixa         | Impacto mínimo                                       | Gas inefficiency              |
+| 🔵 Informacional | Risco indireto, útil para análise                    | Variável pública não sensível |
+
+### ⚙️ Classificação Simplificada
+
+| Pontuação | Classificação |
+| --------- | ------------- |
+| 1–2       | 🔵 Informação |
+| 3–4       | 🟡 Baixa      |
+| 5–6       | 🟠 Média      |
+| 7–9       | 🔴 Alta       |
+
+### 📘 Licença
+
+Licenciado sob MIT License — livre para uso, modificação e contribuição.
+
+#### ✨ Autor
+
+João Filho
+💼 Residência em Criptografia e Blockchain
+🔐 Foco em Segurança da Informação & Smart Contract Analysis
+📧 joaofilho1467@gmail.com
+
+### 📸 Arquitetura da Solução
+![Imagem](image/arquitetura_solucao.png)
