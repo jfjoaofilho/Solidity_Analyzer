@@ -16,26 +16,26 @@ const FORGE_TIMEOUT = 5 * 60 * 1000; // 5 min default
 
 function safeExec(cmd, opts = {}) {
   return new Promise((resolve) => {
-    const proc = exec(cmd, opts, { maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
+    // Mesclamos o 'opts' e o 'maxBuffer' em um único objeto usando o spread operator (...)
+    const options = { ...opts, maxBuffer: 50 * 1024 * 1024 };
+    
+    // Agora passamos apenas 3 argumentos corretamente
+    exec(cmd, options, (err, stdout, stderr) => {
       resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') });
     });
   });
 }
 
 function generateBasicTest(contractName, source) {
-  // Very naive parser: find public/external functions signature names
+  // Parser ingênuo: encontra assinaturas de funções public/external
   const fnRegex = /function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*(public|external)/g;
   const fns = [];
   let m;
   while ((m = fnRegex.exec(source)) !== null) {
-    const name = m[1];
-    const args = m[2].trim();
-    fns.push({ name, args });
+    fns.push({ name: m[1], args: m[2].trim() });
   }
 
-  // Create a basic Foundry test (Solidity)
-  // We'll use DSTest / Test from forge-std (forge project will include lib)
-  // Template:
+  // Cria um teste básico do Foundry (Solidity)
   let test = `// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.0;
 
@@ -49,47 +49,45 @@ contract ${contractName}Test is Test {
         instance = new ${contractName}();
     }
 
-    function test_deploy() public {
+    function test_deploy_gas_check() public {
+        uint256 gasStart = gasleft();
         assert(address(instance) != address(0));
+        uint256 gasUsed = gasStart - gasleft();
+        // Você pode adicionar asserts de limite de gas aqui, ex:
+        // assert(gasUsed < 3000000);
     }\n\n`;
 
-  // Add simple calls for first few functions (use defaults: 0/false/address(0))
-  for (let i = 0; i < Math.min(3, fns.length); i++) {
+  // Gerando Fuzz Tests Reais com base nos argumentos
+  for (let i = 0; i < fns.length; i++) {
     const fn = fns[i];
-    const args = fn.args.split(',').map(s => s.trim()).filter(Boolean);
-    const callArgs = args.map(a => {
-      // pick default by type name
-      if (a.includes('uint') || a.includes('int')) return '1';
-      if (a.includes('bool')) return 'true';
-      if (a.includes('address')) return 'address(this)';
-      if (a.includes('string')) return '"test"';
-      return '0';
-    }).join(', ');
-    // safest: call in try/catch style using low-level call? simpler: just call and ignore revert (wrap with try/catch introduced in solidity 0.8.0)
-    test += `    function test_call_${fn.name}() public {
-        // best-effort: call ${fn.name} with simple defaults
-        try instance.${fn.name}(${callArgs}) {
-            // success
+    if (fn.args) {
+      // Extrai apenas os nomes das variáveis para passar na chamada da função
+      const argNames = fn.args.split(',').map(arg => arg.trim().split(/\s+/).pop()).join(', ');
+      
+      // O Foundry faz fuzzing automaticamente em funções de teste que recebem parâmetros
+      test += `    function testFuzz_${fn.name}(${fn.args}) public {
+        // best-effort: fuzzing dinâmico
+        try instance.${fn.name}(${argNames}) {
+            // Sucesso
         } catch {
-            // ignore failures from heuristic call
+            // Ignora falhas heurísticas (reverts esperados por requires do contrato)
         }
     }\n\n`;
+    } else {
+      // Teste de chamada simples para funções sem argumentos
+      test += `    function testCall_${fn.name}() public {
+        try instance.${fn.name}() {} catch {}
+    }\n\n`;
+    }
   }
-
-  // Add a basic fuzz test if present
-  test += `    // Example simple fuzz - adjust to target functions manually
-    function test_fuzz_uint(uint256 x) public {
-        // placeholder fuzz: call one function if exists
-        // add your own fuzz tests for meaningful coverage
-    }\n`;
 
   test += `}\n`;
   return test;
 }
 
 app.post('/analyze', async (req, res) => {
-  // body: { code: string, contractName?: string, runTests?: bool, runCoverage?: bool, doFuzz?: bool, timeoutSec?: number }
-  const { code, contractName = 'Contract', runTests = true, runCoverage = false, doFuzz = false, timeoutSec = 300 } = req.body || {};
+  // body: { code, testCode, contractName, runTests, runCoverage, doFuzz, timeoutSec }
+  const { code, testCode, contractName = 'Contract', runTests = true, runCoverage = false, doFuzz = false, timeoutSec = 300 } = req.body || {};
   if (!code || typeof code !== 'string') return res.status(400).json({ error: 'No code provided' });
 
   const id = uuidv4();
@@ -97,45 +95,43 @@ app.post('/analyze', async (req, res) => {
   fs.mkdirSync(workspace, { recursive: true });
 
   try {
-    // 1) init a forge project
-    // Note: requires foundryup / forge installed on host
+    // 1) Inicia um projeto forge
     const initCmd = `cd ${workspace} && forge init --force --no-git`;
     const initResult = await safeExec(initCmd);
-    // write contract to src/
+    
+    // Escreve o contrato na pasta src/
     const srcDir = path.join(workspace, 'src');
     fs.mkdirSync(srcDir, { recursive: true });
     const filename = `${contractName}.sol`;
     fs.writeFileSync(path.join(srcDir, filename), code, 'utf8');
 
-    // 2) create test file heuristically
+    // 2) Cria o arquivo de teste (Manual ou Automático)
     const testDir = path.join(workspace, 'test');
     fs.mkdirSync(testDir, { recursive: true });
-    const testContent = generateBasicTest(contractName, code);
+    
+    // Se o usuário mandou um código de teste manual, usamos ele. Se não, geramos um.
+    const testContent = (testCode && testCode.trim() !== '') ? testCode : generateBasicTest(contractName, code);
     const testPath = path.join(testDir, `${contractName}Test.t.sol`);
     fs.writeFileSync(testPath, testContent, 'utf8');
 
-    // 3) prepare commands
+    // 3) Prepara resultados
     const results = { id, workspace, init: initResult };
 
-    // 4) run forge build (compile)
+    // 4) Roda forge build (compilação)
     const buildCmd = `cd ${workspace} && forge build`;
     const buildResult = await safeExec(buildCmd);
     results.build = buildResult;
 
-    // If compile errors, return early with logs
-    if (buildResult.err && buildResult.err.code) {
-      // return logs
-    }
-
-    // 5) run tests if requested
+    // Se houver erro de compilação severo, podemos continuar para extrair os logs
+    
+    // 5) Roda os testes se solicitado
     if (runTests) {
-      let testCmd = `cd ${workspace} && forge test --no-ansi`;
+      let testCmd = `cd ${workspace} && forge test --gas-report`;
       if (doFuzz) {
-        // Foundry fuzz runs as part of forge test; we add -vv to increase verbosity
-        testCmd = `cd ${workspace} && forge test -vv --no-ansi`;
+        testCmd = `cd ${workspace} && forge test --gas-report -vvv`;
       }
+      
       const testPromise = safeExec(testCmd);
-      // implement timeout
       const timed = await Promise.race([
         testPromise,
         new Promise((r) => setTimeout(() => r({ err: { message: 'timeout' }, stdout: '', stderr: 'timeout' }), timeoutSec * 1000))
@@ -143,18 +139,17 @@ app.post('/analyze', async (req, res) => {
       results.test = timed;
     }
 
-    // 6) coverage
+    // 6) Cobertura
     if (runCoverage) {
-      // forge coverage can require llvm; user must have it installed
       const covCmd = `cd ${workspace} && forge coverage --no-ansi`;
       const cov = await safeExec(covCmd);
       results.coverage = cov;
     }
 
-    // 7) read test file and return results and generated test for inspection
+    // 7) Lê o arquivo de teste para inspeção (caso tenha sido autogerado)
     const generatedTest = fs.readFileSync(testPath, 'utf8');
 
-    // 8) collect outputs
+    // 8) Coleta os outputs
     const out = {
       id,
       workspace,
@@ -165,7 +160,9 @@ app.post('/analyze', async (req, res) => {
       build: { stdout: results.build.stdout, stderr: results.build.stderr },
       test: results.test ? { stdout: results.test.stdout, stderr: results.test.stderr } : null,
       coverage: results.coverage ? { stdout: results.coverage.stdout, stderr: results.coverage.stderr } : null,
-      generatedTest
+      generatedTest,
+      // Retornamos a saída bruta para o frontend renderizar o console
+      rawOutput: results.test ? results.test.stdout : ""
     };
 
     res.json(out);
@@ -175,4 +172,56 @@ app.post('/analyze', async (req, res) => {
 });
 
 const port = process.env.PORT || 5000;
-app.listen(port, () => console.log(`Forge backend listening on ${port}`));
+app.listen(port, () => console.log(`Forge backend listening on port ${port}`));
+
+// ==========================================
+// ROTA DO MYTHRIL (Execução Simbólica)
+// ==========================================
+app.post('/analyze-mythril', async (req, res) => {
+  const { code, contractName = 'TargetContract', max_depth = 5, timeout_sec = 60, tx_count = 2 } = req.body || {};
+  if (!code || typeof code !== 'string') {
+    return res.status(400).json({ success: false, error: 'Nenhum código fornecido' });
+  }
+
+  const id = uuidv4();
+  const workspace = path.join(os.tmpdir(), `myth_run_${id}`);
+  fs.mkdirSync(workspace, { recursive: true });
+  
+  const filePath = path.join(workspace, `${contractName}.sol`);
+  fs.writeFileSync(filePath, code, 'utf8');
+
+  try {
+    // Monta o comando de execução do Mythril com saída em formato JSON
+    const cmd = `python3 -m mythril analyze ${filePath} -o json --max-depth ${max_depth} -t ${tx_count} --execution-timeout ${timeout_sec}`;
+    
+    const start = Date.now();
+    const result = await safeExec(cmd);
+    const elapsed_ms = Date.now() - start;
+
+    let issues = [];
+    
+    // Tenta fazer o parse da saída do Mythril para extrair os alertas reais
+    try {
+      const parsedOutput = JSON.parse(result.stdout);
+      // O Mythril geralmente retorna as vulnerabilidades dentro de um array ou objeto 'issues'
+      if (parsedOutput && parsedOutput.length > 0 && parsedOutput[0].issues) {
+        issues = parsedOutput[0].issues;
+      } else if (parsedOutput && parsedOutput.issues) {
+        issues = parsedOutput.issues;
+      }
+    } catch (parseError) {
+      console.log("Aviso: A saída do Mythril não foi um JSON válido (possível erro de compilação).");
+    }
+
+    res.json({
+      success: true,
+      issues: issues,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      elapsed_ms: elapsed_ms
+    });
+
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
