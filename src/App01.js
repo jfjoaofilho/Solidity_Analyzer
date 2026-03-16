@@ -225,7 +225,7 @@ function analyzeCode(source) {
 
 async function callLLMInferenceEndpoint(findings, filename, codeSnippet) {
   try {
-    const resp = await fetch("http://localhost:3001/api/llm/infer", {
+    const resp = await fetch("http://localhost:5000/api/llm/infer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filename, findings, codeSnippet }),
@@ -321,18 +321,74 @@ function SlitherPage({ code, setCode, goHome }) {
     localStorage.setItem("sia_history_v1", JSON.stringify(history));
   }, [history]);
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     setIsAnalyzing(true);
-    setTimeout(() => {
-      try {
-        const findings = analyzeCode(code);
-        setVulns(findings);
-        const entry = { id: Date.now(), filename, timestamp: new Date().toISOString(), codeSnippet: code.slice(0, 400), findings, notes };
-        setHistory((h) => [entry, ...h].slice(0, 50));
-      } finally {
-        setIsAnalyzing(false);
+    try {
+      const resp = await fetch("http://localhost:5000/analyze-slither", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      
+      const json = await resp.json();
+      
+      if (!json.success) {
+        alert("Erro no backend: " + json.error);
+        return;
       }
-    }, 400);
+
+      // Mapeando a saída REAL do Slither para a nossa UI
+      // Mapeando a saída REAL do Slither para a nossa UI e "limpando" o lixo textual
+      const rawIssues = json.issues || [];
+      const mappedFindings = rawIssues.map(it => {
+        // Remove os caminhos de arquivos feios do log (/tmp/slither_run.../) e quebras de linha excessivas
+        let cleanDesc = (it.description || "Sem descrição")
+          .replace(/\(.*?TargetContract\.sol#[0-9-]+\)/g, '')
+          .replace(/\n\s*/g, ' ')
+          .trim();
+
+        const title = it.check || "Vulnerabilidade Detectada";
+        
+        // Melhora a Inteligência Heurística (LLM Local) para os padrões reais do Slither
+        let impact = "Impacto de negócio desconhecido. Requer auditoria manual.";
+        const t = title.toLowerCase();
+        
+        if (t.includes("reentrancy")) {
+          impact = "Um atacante pode drenar o saldo do contrato realizando chamadas recursivas antes que o estado seja atualizado.";
+        } else if (t.includes("arbitrary-send")) {
+          impact = "Controles de acesso fracos permitem que qualquer usuário force o contrato a enviar fundos, causando perda financeira.";
+        } else if (t.includes("shadowing")) {
+          impact = "Ambiguidade no código. Pode levar desenvolvedores a confiarem em variáveis erradas, causando bugs lógicos silenciosos.";
+        } else if (t.includes("low-level-calls")) {
+          impact = "Chamadas de baixo nível não verificam a existência do contrato de destino, podendo retornar sucesso falso e ignorar erros.";
+        } else if (t.includes("naming-convention") || t.includes("solc-version")) {
+          impact = "Débito técnico. Dificulta a manutenção e a auditoria por terceiros, reduzindo a confiabilidade do código.";
+        }
+
+        return {
+          title: title,
+          description: cleanDesc,
+          severity: it.impact || "Informational",
+          location: it.elements && it.elements.length > 0 
+              ? `Linha(s): ${it.elements.map(e => e.source_mapping?.lines?.join(', ')).join(' | ')}` 
+              : "Desconhecida",
+          swc: null,
+          category: it.check || "Uncategorized",
+          businessImpact: impact,
+        };
+      });
+
+      setVulns(mappedFindings);
+      
+      // Opcional: Você pode colocar um console.log(json.raw_output) aqui para ver os erros de compilação
+      
+      const entry = { id: Date.now(), filename, timestamp: new Date().toISOString(), codeSnippet: code.slice(0, 400), findings: mappedFindings, notes };
+      setHistory((h) => [entry, ...h].slice(0, 50));
+    } catch (err) {
+      alert("Falha de conexão com o backend (porta 5000).");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleUpload = (e) => {
@@ -415,7 +471,7 @@ function SlitherPage({ code, setCode, goHome }) {
                   alert("Execute a análise antes de gerar o relatório executivo.");
                   return;
                 }
-                const resp = await fetch("http://localhost:3001/api/llm/report-executivo", {
+                const resp = await fetch("http://localhost:5000/api/llm/report-executivo", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ filename, findings: vulns }),

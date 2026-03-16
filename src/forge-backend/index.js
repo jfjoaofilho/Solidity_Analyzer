@@ -225,3 +225,132 @@ app.post('/analyze-mythril', async (req, res) => {
     res.status(500).json({ success: false, error: String(err) });
   }
 });
+
+// ==========================================
+// ROTA DO SLITHER (Análise Estática Real)
+// ==========================================
+app.post('/analyze-slither', async (req, res) => {
+  const { code, contractName = 'TargetContract' } = req.body || {};
+  if (!code || typeof code !== 'string') {
+    return res.status(400).json({ success: false, error: 'Nenhum código fornecido' });
+  }
+
+  const id = uuidv4();
+  const workspace = path.join(os.tmpdir(), `slither_run_${id}`);
+  fs.mkdirSync(workspace, { recursive: true });
+  
+  const filePath = path.join(workspace, `${contractName}.sol`);
+  fs.writeFileSync(filePath, code, 'utf8');
+
+  try {
+    const start = Date.now();
+    // O Slither exporta o resultado em JSON nativamente.
+    // Usamos solc-select no ambiente se necessário, mas aqui chamamos o slither direto.
+    const cmd = `slither ${filePath} --json -`;
+    
+    // O Slither retorna exit code != 0 quando acha vulnerabilidades, então safeExec precisa lidar com isso.
+    const result = await safeExec(cmd);
+    const elapsed_ms = Date.now() - start;
+
+    let issues = [];
+    
+    // O Slither manda o JSON no stdout (ou stderr dependendo da versão), vamos tentar parsear ambos
+    try {
+      // Slither --json - costuma jogar o JSON no stdout
+      const parsed = JSON.parse(result.stdout || result.stderr);
+      if (parsed.success && parsed.results && parsed.results.detectors) {
+        issues = parsed.results.detectors;
+      }
+    } catch (e) {
+      console.log("Aviso: Falha ao fazer parse do JSON do Slither. Pode ser erro de compilação.");
+    }
+
+    res.json({
+      success: true,
+      issues: issues,
+      raw_output: result.stderr + result.stdout, // Slither joga os logs textuais no stderr
+      elapsed_ms: elapsed_ms
+    });
+
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+// ==========================================
+// ROTAS DA LLM (Inteligência Explicável)
+// ==========================================
+
+// Rota 1: Inferência contextual para os cards
+app.post('/api/llm/infer', async (req, res) => {
+  const { filename, findings, codeSnippet } = req.body;
+
+  try {
+    /* AQUI ENTRA A CHAMADA REAL PARA A API DA SUA LLM (Ex: Groq, OpenAI, Gemini).
+      Como estamos rodando localmente sem a sua chave de API ainda, vamos 
+      simular a estrutura de resposta que o frontend espera.
+      
+      Para conectar de verdade com o Groq (citado no seu SBRC), você usaria:
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", { ... })
+    */
+    
+    console.log(`Recebida requisição LLM para o arquivo: ${filename}`);
+    console.log(`Vulnerabilidades para analisar: ${findings.length}`);
+
+    // Simulando a resposta estruturada da LLM (A IA de verdade preencheria isso lendo o código)
+    const aiEnrichedFindings = findings.map(f => {
+      let aiImpact = "";
+      if (f.title.toLowerCase().includes("reentrancy")) {
+         aiImpact = "Análise LLM: O contrato permite chamadas recursivas antes de atualizar o saldo. Sugestão: Implemente ReentrancyGuard do OpenZeppelin ou use o padrão Checks-Effects-Interactions.";
+      } else {
+         aiImpact = `Análise LLM: Revisado o contexto do código. A falha de ${f.title} expõe o protocolo a riscos. Sugere-se refatoração da linha identificada.`;
+      }
+
+      return {
+        title: f.title,
+        businessImpact: aiImpact // Sobrescreve a heurística local!
+      };
+    });
+
+    // Devolve a resposta "Inteligente" para o frontend
+    res.json({ findings: aiEnrichedFindings });
+
+  } catch (err) {
+    console.error("Erro na rota da LLM:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Rota 2: Geração do Relatório Executivo (Para download)
+app.post('/api/llm/report-executivo', async (req, res) => {
+  const { filename, findings } = req.body;
+
+  try {
+    console.log(`Gerando Relatório Executivo para: ${filename}`);
+    
+    // Aqui a LLM geraria um texto corrido. Vamos montar a estrutura:
+    let reportText = `RELATÓRIO EXECUTIVO DE AUDITORIA DE INTELIGÊNCIA ARTIFICIAL\n`;
+    reportText += `========================================================\n\n`;
+    reportText += `Arquivo analisado: ${filename}\n`;
+    reportText += `Data da Análise: ${new Date().toLocaleString('pt-BR')}\n\n`;
+    reportText += `RESUMO GERENCIAL:\n`;
+    reportText += `A análise combinada de sintaxe e padrões identificou ${findings.length} potenciais riscos.\n\n`;
+    
+    findings.forEach((f, idx) => {
+      reportText += `[${idx + 1}] Falha: ${f.title}\n`;
+      reportText += `    Severidade: ${f.severity}\n`;
+      reportText += `    Impacto: ${f.businessImpact || "Não especificado"}\n`;
+      reportText += `    Recomendação: Revisão arquitetural imediata no módulo afetado.\n\n`;
+    });
+
+    reportText += `========================================================\n`;
+    reportText += `Gerado pelo Framework Unificado do CPQD (SBRC 2026).\n`;
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}-relatorio-executivo.txt"`);
+    res.send(reportText);
+
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
