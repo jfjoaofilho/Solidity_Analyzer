@@ -1,5 +1,5 @@
 // ==========================
-// 📄 server.js – SIA LLM Hybrid Backend (OpenAI + Ollama)
+// 📄 server.js – SIA LLM Hybrid Backend (Google Gemini + Ollama)
 // ==========================
 import express from "express";
 import fetch from "node-fetch";
@@ -10,12 +10,20 @@ import chalk from "chalk";
 
 dotenv.config();
 const app = express();
-app.use(cors());
+
+// 🌐 Configuração CORS permissiva
+app.use(cors({
+  origin: '*', // Permite todas as origens
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
 app.use(bodyParser.json());
 
 // 🔧 Configurações
-const OPENAI_KEY = process.env.OPENAI_API_KEY || null;
-const OPENAI_MODEL = "gpt-4o-mini";
+const GEMINI_KEY = process.env.GEMINI_API_KEY || null;
+const GEMINI_MODEL = "gemini-3-flash-preview"; // Gemini 3 Flash Preview (suporta até 1M tokens)
 const OLLAMA_MODEL = "phi3"; // você pode trocar por "llama3" ou "phi3"
 const PORT = process.env.PORT || 3001;
 
@@ -26,32 +34,39 @@ function log(msg, color = "white") {
 }
 
 /* ==========================================================
-   🧠 Função genérica de inferência (OpenAI ou Ollama)
+   🧠 Função genérica de inferência (Gemini ou Ollama)
    ========================================================== */
 async function callLLM(messages, max_tokens = 1600, temperature = 0.4) {
-  // Se houver chave OpenAI
-  if (OPENAI_KEY) {
+  // Se houver chave Gemini
+  if (GEMINI_KEY) {
     try {
-      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: OPENAI_MODEL,
-          messages,
-          temperature,
-          max_tokens,
-        }),
-      });
+      // Converter formato de mensagens do OpenAI para Gemini
+      const geminiContents = convertToGeminiFormat(messages);
+      
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: geminiContents,
+            generationConfig: {
+              temperature,
+              maxOutputTokens: max_tokens,
+            },
+          }),
+        }
+      );
+
 
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
-      return data.choices?.[0]?.message?.content?.trim() || "";
+      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
     } catch (err) {
-      if (err.message.includes("insufficient_quota")) {
-        log("⚠️ Sem créditos na OpenAI — alternando para Ollama local", "yellow");
+      if (err.message.includes("quota") || err.message.includes("RESOURCE_EXHAUSTED")) {
+        log("⚠️ Sem créditos no Gemini — alternando para Ollama local", "yellow");
         return await callOllama(messages);
       }
       throw err;
@@ -60,6 +75,34 @@ async function callLLM(messages, max_tokens = 1600, temperature = 0.4) {
 
   // Caso não haja API Key → usa Ollama local
   return await callOllama(messages);
+}
+
+/* ==========================================================
+   🔄 Converte mensagens do formato OpenAI para Gemini
+   ========================================================== */
+function convertToGeminiFormat(messages) {
+  const contents = [];
+  let systemInstruction = "";
+
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      // Gemini não tem role "system", então concatenamos ao primeiro user message
+      systemInstruction = msg.content + "\n\n";
+    } else if (msg.role === "user") {
+      contents.push({
+        role: "user",
+        parts: [{ text: systemInstruction + msg.content }],
+      });
+      systemInstruction = ""; // Limpa após usar
+    } else if (msg.role === "assistant") {
+      contents.push({
+        role: "model",
+        parts: [{ text: msg.content }],
+      });
+    }
+  }
+
+  return contents;
 }
 
 /* ==========================================================
@@ -198,6 +241,6 @@ ${findings.map((f, i) => `${i + 1}) ${f.title} (${f.severity}) - ${f.description
 
 app.listen(PORT, () => {
   console.log(chalk.green(`🚀 LLM hybrid server listening on port ${PORT}`));
-  if (OPENAI_KEY) log("🔑 Usando API da OpenAI", "cyan");
+  if (GEMINI_KEY) log("🔑 Usando API do Google Gemini", "cyan");
   else log("💻 Usando Ollama local (modo offline)", "yellow");
 });
