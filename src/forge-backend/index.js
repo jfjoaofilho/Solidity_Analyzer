@@ -26,55 +26,58 @@ function safeExec(cmd, opts = {}) {
   });
 }
 
-function generateBasicTest(contractName, source) {
-  // Parser ingênuo: encontra assinaturas de funções public/external
+function generateBasicTest(fileName, source) {
+  // 1. LIMPEZA TOTAL
+  const cleanSource = source
+    .replace(/\/\*[\s\S]*?\*\//g, '') 
+    .replace(/\/\/.*/g, '');          
+
+  // 2. EXTRAÇÃO
+  let realContractName = fileName; 
+  const matchName = cleanSource.match(/contract\s+([a-zA-Z_][a-zA-Z0-9_]*)/);
+  if (matchName) {
+      realContractName = matchName[1];
+  }
+
+  // RASTREADOR PARA O TERMINAL:
+  console.log("👉 [DEBUG FORGE] Nome do contrato que eu encontrei foi:", realContractName);
+
+  // 3. PARSER DAS FUNÇÕES
   const fnRegex = /function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)\s*(public|external)/g;
   const fns = [];
   let m;
-  while ((m = fnRegex.exec(source)) !== null) {
+  while ((m = fnRegex.exec(cleanSource)) !== null) {
     fns.push({ name: m[1], args: m[2].trim() });
   }
 
-  // Cria um teste básico do Foundry (Solidity)
+  // 4. MONTAGEM DO TESTE
   let test = `// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.0;
 
 import "forge-std/Test.sol";
-import "../src/${contractName}.sol";
+import "../src/${fileName}.sol";
 
-contract ${contractName}Test is Test {
-    ${contractName} instance;
+contract ${realContractName}Test is Test {
+    ${realContractName} instance;
 
     function setUp() public {
-        instance = new ${contractName}();
+        instance = new ${realContractName}();
     }
 
     function test_deploy_gas_check() public {
         uint256 gasStart = gasleft();
         assert(address(instance) != address(0));
         uint256 gasUsed = gasStart - gasleft();
-        // Você pode adicionar asserts de limite de gas aqui, ex:
-        // assert(gasUsed < 3000000);
     }\n\n`;
 
-  // Gerando Fuzz Tests Reais com base nos argumentos
   for (let i = 0; i < fns.length; i++) {
     const fn = fns[i];
     if (fn.args) {
-      // Extrai apenas os nomes das variáveis para passar na chamada da função
       const argNames = fn.args.split(',').map(arg => arg.trim().split(/\s+/).pop()).join(', ');
-      
-      // O Foundry faz fuzzing automaticamente em funções de teste que recebem parâmetros
       test += `    function testFuzz_${fn.name}(${fn.args}) public {
-        // best-effort: fuzzing dinâmico
-        try instance.${fn.name}(${argNames}) {
-            // Sucesso
-        } catch {
-            // Ignora falhas heurísticas (reverts esperados por requires do contrato)
-        }
+        try instance.${fn.name}(${argNames}) {} catch {}
     }\n\n`;
     } else {
-      // Teste de chamada simples para funções sem argumentos
       test += `    function testCall_${fn.name}() public {
         try instance.${fn.name}() {} catch {}
     }\n\n`;
