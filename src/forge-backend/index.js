@@ -7,12 +7,19 @@ const path = require('path');
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
+const fetch = require('node-fetch');
+require('dotenv').config();
 
 const app = express();
 app.use(bodyParser.json({ limit: '8mb' }));
 app.use(cors());
 
 const FORGE_TIMEOUT = 5 * 60 * 1000; // 5 min default
+
+// 🔧 Configurações do LLM
+const GEMINI_KEY = process.env.GEMINI_API_KEY || null;
+const GEMINI_MODEL = "gemini-3-flash-preview"; // Gemini 3 Flash Preview (suporta até 1M tokens)
+const OLLAMA_MODEL = "phi3"; // você pode trocar por "llama3" ou "phi3"
 
 function safeExec(cmd, opts = {}) {
   return new Promise((resolve) => {
@@ -24,6 +31,102 @@ function safeExec(cmd, opts = {}) {
       resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') });
     });
   });
+}
+
+/* ==========================================================
+   🔄 Converte mensagens do formato OpenAI para Gemini
+   ========================================================== */
+function convertToGeminiFormat(messages) {
+  const contents = [];
+  let systemInstruction = "";
+
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      // Gemini não tem role "system", então concatenamos ao primeiro user message
+      systemInstruction = msg.content + "\n\n";
+    } else if (msg.role === "user") {
+      contents.push({
+        role: "user",
+        parts: [{ text: systemInstruction + msg.content }],
+      });
+      systemInstruction = ""; // Limpa após usar
+    } else if (msg.role === "assistant") {
+      contents.push({
+        role: "model",
+        parts: [{ text: msg.content }],
+      });
+    }
+  }
+
+  return contents;
+}
+
+/* ==========================================================
+   🧩 Chamada direta ao Ollama local
+   ========================================================== */
+async function callOllama(messages) {
+  try {
+    const resp = await fetch("http://localhost:11434/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        stream: false,
+        messages,
+      }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    const content =
+      data.message?.content?.trim() || data.messages?.[0]?.content?.trim() || "";
+    return content;
+  } catch (err) {
+    console.error(`❌ Erro ao usar Ollama: ${err.message}`);
+    throw new Error("ollama-failed");
+  }
+}
+
+/* ==========================================================
+   🧠 Função genérica de inferência (Gemini ou Ollama)
+   ========================================================== */
+async function callLLM(messages, max_tokens = 1600, temperature = 0.4) {
+  // Se houver chave Gemini
+  if (GEMINI_KEY) {
+    try {
+      // Converter formato de mensagens do OpenAI para Gemini
+      const geminiContents = convertToGeminiFormat(messages);
+      
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: geminiContents,
+            generationConfig: {
+              temperature,
+              maxOutputTokens: max_tokens,
+            },
+          }),
+        }
+      );
+
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+    } catch (err) {
+      if (err.message.includes("quota") || err.message.includes("RESOURCE_EXHAUSTED")) {
+        console.log("⚠️ Sem créditos no Gemini — alternando para Ollama local");
+        return await callOllama(messages);
+      }
+      throw err;
+    }
+  }
+
+  // Caso não haja API Key → usa Ollama local
+  return await callOllama(messages);
 }
 
 function generateBasicTest(contractName, source) {
@@ -172,7 +275,14 @@ app.post('/analyze', async (req, res) => {
 });
 
 const port = process.env.PORT || 5000;
-app.listen(port, () => console.log(`Forge backend listening on port ${port}`));
+app.listen(port, () => {
+  console.log(`🚀 Forge backend listening on port ${port}`);
+  if (GEMINI_KEY) {
+    console.log("🔑 Usando API do Google Gemini");
+  } else {
+    console.log("💻 Usando Ollama local (modo offline)");
+  }
+});
 
 // ==========================================
 // ROTA DO MYTHRIL (Execução Simbólica)
@@ -242,15 +352,21 @@ app.post('/analyze-slither', async (req, res) => {
   const filePath = path.join(workspace, `${contractName}.sol`);
   fs.writeFileSync(filePath, code, 'utf8');
 
+  console.log(`Iniciando análise com Slither para ${contractName} (ID: ${id})`);
+
   try {
     const start = Date.now();
     // O Slither exporta o resultado em JSON nativamente.
     // Usamos solc-select no ambiente se necessário, mas aqui chamamos o slither direto.
+    console.log(filePath)
     const cmd = `slither ${filePath} --json -`;
     
     // O Slither retorna exit code != 0 quando acha vulnerabilidades, então safeExec precisa lidar com isso.
     const result = await safeExec(cmd);
     const elapsed_ms = Date.now() - start;
+
+    console.log(`resultado do Slither (stdout): ${result.stdout}`);
+    console.log(`resultado do Slither (stderr): ${result.stderr}`);
 
     let issues = [];
     
@@ -258,11 +374,12 @@ app.post('/analyze-slither', async (req, res) => {
     try {
       // Slither --json - costuma jogar o JSON no stdout
       const parsed = JSON.parse(result.stdout || result.stderr);
+      console.log(parsed)
       if (parsed.success && parsed.results && parsed.results.detectors) {
         issues = parsed.results.detectors;
       }
     } catch (e) {
-      console.log("Aviso: Falha ao fazer parse do JSON do Slither. Pode ser erro de compilação.");
+      console.log(`Aviso: Falha ao fazer parse do JSON do Slither. Pode ser erro de compilação. ${e}`);
     }
 
     res.json({
@@ -283,74 +400,105 @@ app.post('/analyze-slither', async (req, res) => {
 
 // Rota 1: Inferência contextual para os cards
 app.post('/api/llm/infer', async (req, res) => {
-  const { filename, findings, codeSnippet } = req.body;
+  const { filename, findings = [], codeSnippet = "" } = req.body;
+  if (!Array.isArray(findings)) return res.status(400).json({ error: "bad input" });
+
+  console.log(`📊 Inferindo impacto de ${findings.length} vulnerabilidades (${filename})`);
+
+  const prompt = `
+Você é um analista de segurança blockchain. 
+Resuma o impacto de cada vulnerabilidade em 1–2 frases e atribua uma gravidade (crítico, alto, médio, baixo).
+
+Arquivo: ${filename}
+Trecho analisado:
+${codeSnippet.slice(0, 1200)}
+
+Vulnerabilidades:
+${findings
+  .map(
+    (f, i) =>
+      `${i + 1}) ${f.title} (${f.severity}) - ${f.description} [SWC: ${
+        f.swc || "N/A"
+      }]`
+  )
+  .join("\n")}
+
+Responda apenas em JSON válido:
+[
+  {"idx": <número>, "businessImpact": "<texto>", "impactSeverity": "<string>"}
+]
+`;
 
   try {
-    /* AQUI ENTRA A CHAMADA REAL PARA A API DA SUA LLM (Ex: Groq, OpenAI, Gemini).
-      Como estamos rodando localmente sem a sua chave de API ainda, vamos 
-      simular a estrutura de resposta que o frontend espera.
-      
-      Para conectar de verdade com o Groq (citado no seu SBRC), você usaria:
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", { ... })
-    */
-    
-    console.log(`Recebida requisição LLM para o arquivo: ${filename}`);
-    console.log(`Vulnerabilidades para analisar: ${findings.length}`);
+    const text = await callLLM([
+      { role: "system", content: "Você é um especialista em segurança de contratos inteligentes." },
+      { role: "user", content: prompt },
+    ]);
 
-    // Simulando a resposta estruturada da LLM (A IA de verdade preencheria isso lendo o código)
-    const aiEnrichedFindings = findings.map(f => {
-      let aiImpact = "";
-      if (f.title.toLowerCase().includes("reentrancy")) {
-         aiImpact = "Análise LLM: O contrato permite chamadas recursivas antes de atualizar o saldo. Sugestão: Implemente ReentrancyGuard do OpenZeppelin ou use o padrão Checks-Effects-Interactions.";
-      } else {
-         aiImpact = `Análise LLM: Revisado o contexto do código. A falha de ${f.title} expõe o protocolo a riscos. Sugere-se refatoração da linha identificada.`;
-      }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      const m = text.match(/\[.*\]/s);
+      if (m) parsed = JSON.parse(m[0]);
+    }
 
-      return {
-        title: f.title,
-        businessImpact: aiImpact // Sobrescreve a heurística local!
-      };
-    });
+    if (!parsed) {
+      console.log("⚠️ Saída inesperada da LLM – usando fallback genérico");
+      parsed = findings.map((f, i) => ({
+        idx: i,
+        businessImpact: `A vulnerabilidade "${f.title}" pode comprometer a integridade ou disponibilidade do contrato.`,
+        impactSeverity: f.severity.toLowerCase(),
+      }));
+    }
 
-    // Devolve a resposta "Inteligente" para o frontend
-    res.json({ findings: aiEnrichedFindings });
-
+    res.json({ findings: parsed });
   } catch (err) {
-    console.error("Erro na rota da LLM:", err);
-    res.status(500).json({ error: String(err) });
+    console.error(`🔥 Erro: ${err.message}`);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // Rota 2: Geração do Relatório Executivo (Para download)
 app.post('/api/llm/report-executivo', async (req, res) => {
-  const { filename, findings } = req.body;
+  const { filename, findings = [] } = req.body;
+  console.log(`🧾 Gerando relatório executivo (${findings.length} vulnerabilidades)`);
+
+  const prompt = `
+Você é um consultor de segurança blockchain. 
+Crie um RELATÓRIO EXECUTIVO em português, claro e não técnico.
+
+Estrutura:
+1️⃣ RESUMO EXECUTIVO — visão geral dos riscos.
+2️⃣ IMPACTO DE NEGÓCIO — o que pode acontecer na prática.
+3️⃣ EXEMPLOS DE CENÁRIOS — exemplos reais ou hipotéticos.
+4️⃣ RECOMENDAÇÕES — boas práticas de mitigação.
+5️⃣ CONCLUSÃO — fechamento com priorização de correções.
+
+Vulnerabilidades detectadas:
+${findings.map((f, i) => `${i + 1}) ${f.title} (${f.severity}) - ${f.description}`).join("\n")}
+`;
 
   try {
-    console.log(`Gerando Relatório Executivo para: ${filename}`);
-    
-    // Aqui a LLM geraria um texto corrido. Vamos montar a estrutura:
-    let reportText = `RELATÓRIO EXECUTIVO DE AUDITORIA DE INTELIGÊNCIA ARTIFICIAL\n`;
-    reportText += `========================================================\n\n`;
-    reportText += `Arquivo analisado: ${filename}\n`;
-    reportText += `Data da Análise: ${new Date().toLocaleString('pt-BR')}\n\n`;
-    reportText += `RESUMO GERENCIAL:\n`;
-    reportText += `A análise combinada de sintaxe e padrões identificou ${findings.length} potenciais riscos.\n\n`;
-    
-    findings.forEach((f, idx) => {
-      reportText += `[${idx + 1}] Falha: ${f.title}\n`;
-      reportText += `    Severidade: ${f.severity}\n`;
-      reportText += `    Impacto: ${f.businessImpact || "Não especificado"}\n`;
-      reportText += `    Recomendação: Revisão arquitetural imediata no módulo afetado.\n\n`;
-    });
+    const text = await callLLM([
+      { role: "system", content: "Você é um especialista em auditoria blockchain e deve escrever relatórios executivos em português." },
+      { role: "user", content: prompt },
+    ]);
 
-    reportText += `========================================================\n`;
-    reportText += `Gerado pelo Framework Unificado do CPQD (SBRC 2026).\n`;
+    if (!text || text.trim().length < 20) {
+      throw new Error("Resposta vazia ou inválida da LLM");
+    }
 
-    res.setHeader('Content-Type', 'text/plain');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}-relatorio-executivo.txt"`);
-    res.send(reportText);
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename.replace(/\.[^/.]+$/, "")}-relatorio-executivo.txt"`
+    );
 
+    console.log(`✅ Relatório executivo gerado (${text.length} caracteres)`);
+    return res.send(text);
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    console.error(`🔥 Erro: ${err.message}`);
+    res.status(500).send("Erro ao gerar relatório executivo.");
   }
 });
